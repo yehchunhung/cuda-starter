@@ -5,6 +5,8 @@
 #include <cassert>
 #include "../matrix_addition/matrix_utils.h"
 
+#define TILE_SIZE 16
+
 __global__ void matMul(
     int rows1, int cols1, int rows2, int cols2,
     float* a, float* b, float* c
@@ -26,6 +28,52 @@ __global__ void matMul(
     }
 }
 
+__global__ void matMulSharedMemory(
+    int rows1, int cols1, int rows2, int cols2,
+    float* a, float* b, float* c
+) {
+    assert(cols1 == rows2 && "Matrix dimensions unmatched for multiplication!");
+
+    // init sub-matrices used in shared memory
+    __shared__ float shared_a[TILE_SIZE][TILE_SIZE];
+    __shared__ float shared_b[TILE_SIZE][TILE_SIZE];
+
+    // indices on sub-matrices, shared_a and shared_b
+    int tx = threadIdx.x, ty = threadIdx.y;
+
+    // indices on output matrix c
+    int row = ty + blockDim.y * blockIdx.y;
+    int col = tx + blockDim.x * blockIdx.x;
+
+    // loop over sub-matrices
+    float temp = 0.0;
+    for (int m = 0; m < (cols1 + TILE_SIZE - 1) / TILE_SIZE; m++) {
+        // copy elements from original matrices to sub-matrices
+        if (row < rows1 && m*TILE_SIZE + tx < cols1)
+            shared_a[ty][tx] = a[row*cols1 + m*TILE_SIZE + tx];
+        else
+            shared_a[ty][tx] = 0.0;
+
+        if (m*TILE_SIZE + ty < rows2 && col < cols2)
+            shared_b[ty][tx] = b[(m*TILE_SIZE + ty)*cols2 + tx];
+        else
+            shared_b[ty][tx] = 0.0;
+
+        __syncthreads();
+        
+        // compute matmul per thread within a block
+        for (int i = 0; i < TILE_SIZE; i++)
+            temp += shared_a[ty][i] * shared_b[i][tx];
+
+        __syncthreads();
+    }
+
+    // put the result to output matrix
+    if (row < rows1 && col < cols2)
+        c[row * cols2 + col] = temp;
+}
+
+
 int main() {
     int rows1 = 1024, rows2 = 512;
     int cols1 = 512, cols2 = 512;
@@ -41,6 +89,9 @@ int main() {
 
     for (int i = 0; i < rows2 * cols2; i++)
         host_b[i] = (float)rand() / RAND_MAX;
+
+    printMatrix("A", host_a, rows1, cols1);
+    printMatrix("B", host_b, rows1, cols1);
 
     // init input/output matrics in GPU
     float* device_a;
@@ -60,16 +111,18 @@ int main() {
         (cols2 + threadsPerBlock.x - 1) / threadsPerBlock.x,
         (rows1 + threadsPerBlock.y - 1) / threadsPerBlock.y
     );
+
+    // standard matmul
     matMul<<<blocksPerGrid, threadsPerBlock>>>(rows1, cols1, rows2, cols2, device_a, device_b, device_c);
     cudaDeviceSynchronize();
-    
-    // copy result back to CPU
     cudaMemcpy(host_c, device_c, rows1 * cols2 * sizeof(float), cudaMemcpyDeviceToHost);
-
-    // show result
-    printMatrix("A", host_a, rows1, cols1);
-    printMatrix("B", host_b, rows1, cols1);
     printMatrix("A @ B", host_c, rows1, cols2);
+
+    // matmul with shared memory
+    matMulSharedMemory<<<blocksPerGrid, threadsPerBlock>>>(rows1, cols1, rows2, cols2, device_a, device_b, device_c);
+    cudaDeviceSynchronize();
+    cudaMemcpy(host_c, device_c, rows1 * cols2 * sizeof(float), cudaMemcpyDeviceToHost);
+    printMatrix("A @ B (using shared memory)", host_c, rows1, cols2);
 
     // clean up
     free(host_a);
