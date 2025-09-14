@@ -5,7 +5,7 @@
 #include <cassert>
 #include "../matrix_addition/matrix_utils.h"
 
-#define TILE_SIZE 16
+#define TILE_SIZE 32
 
 __global__ void matMul(
     int rows1, int cols1, int rows2, int cols2,
@@ -38,7 +38,7 @@ __global__ void matMulSharedMemory(
     __shared__ float shared_a[TILE_SIZE][TILE_SIZE];
     __shared__ float shared_b[TILE_SIZE][TILE_SIZE];
 
-    // indices on sub-matrices, shared_a and shared_b
+    // local indices on sub-matrices, shared_a and shared_b
     int tx = threadIdx.x, ty = threadIdx.y;
 
     // indices on output matrix c
@@ -46,7 +46,7 @@ __global__ void matMulSharedMemory(
     int col = tx + blockDim.x * blockIdx.x;
 
     // loop over sub-matrices
-    float temp = 0.0;
+    float sum = 0.0;
     for (int m = 0; m < (cols1 + TILE_SIZE - 1) / TILE_SIZE; m++) {
         // copy elements from original matrices to sub-matrices
         if (row < rows1 && m*TILE_SIZE + tx < cols1)
@@ -63,14 +63,64 @@ __global__ void matMulSharedMemory(
         
         // compute matmul per thread within a block
         for (int i = 0; i < TILE_SIZE; i++)
-            temp += shared_a[ty][i] * shared_b[i][tx];
+            sum += shared_a[ty][i] * shared_b[i][tx];
 
         __syncthreads();
     }
 
     // put the result to output matrix
     if (row < rows1 && col < cols2)
-        c[row * cols2 + col] = temp;
+        c[row * cols2 + col] = sum;
+}
+
+
+__global__ void matMulCoalescedSharedMemory(
+    int rows1, int cols1, int rows2, int cols2,
+    float* a, float* b, float* c
+) {
+    assert(cols1 == rows2 && "Matrix dimensions unmatched for multiplication!");
+
+    // init sub-matrices used in shared memory
+    __shared__ float shared_a[TILE_SIZE][TILE_SIZE];
+    __shared__ float shared_b[TILE_SIZE][TILE_SIZE];
+
+    // local indices on sub-matrices, shared_a and shared_b
+    int tx = threadIdx.x, ty = threadIdx.y;
+
+    // indices on output matrix c
+    int row = ty + blockDim.y * blockIdx.y;
+    int col = tx + blockDim.x * blockIdx.x;
+
+    // loop over sub-matrices
+    float sum = 0.0;
+    for (int m = 0; m < (cols1 + TILE_SIZE - 1) / TILE_SIZE; m++) {
+        // copy elements from original matrices to sub-matrices
+        if (row < rows1 && m*TILE_SIZE + tx < cols1)
+            shared_a[ty][tx] = a[row*cols1 + m*TILE_SIZE + tx];
+        else
+            shared_a[ty][tx] = 0.0;
+
+        if (m*TILE_SIZE + ty < rows2 && col < cols2)
+            // shared_b[ty][tx] = b[(m*TILE_SIZE + ty)*cols2 + col];
+            // threads along a column cannot access contiguous memory locations
+            // not coalesced -> slow global memory access
+            // access input matrix row-wise to make it coalesced
+            shared_b[tx][ty] = b[(m*TILE_SIZE + ty)*cols2 + col];
+        else
+            shared_b[tx][ty] = 0.0;
+
+        __syncthreads();
+        
+        // compute matmul per thread within a block
+        for (int i = 0; i < TILE_SIZE; i++)
+            sum += shared_a[ty][i] * shared_b[tx][ti];
+
+        __syncthreads();
+    }
+
+    // put the result to output matrix
+    if (row < rows1 && col < cols2)
+        c[row * cols2 + col] = sum;
 }
 
 
@@ -106,7 +156,7 @@ int main() {
     cudaMemcpy(device_b, host_b, rows2 * cols2 * sizeof(float), cudaMemcpyHostToDevice);
 
     // perform matrix multiplication
-    dim3 threadsPerBlock(16, 16);
+    dim3 threadsPerBlock(TILE_SIZE, TILE_SIZE);
     dim3 blocksPerGrid(
         (cols2 + threadsPerBlock.x - 1) / threadsPerBlock.x,
         (rows1 + threadsPerBlock.y - 1) / threadsPerBlock.y
@@ -123,6 +173,12 @@ int main() {
     cudaDeviceSynchronize();
     cudaMemcpy(host_c, device_c, rows1 * cols2 * sizeof(float), cudaMemcpyDeviceToHost);
     printMatrix("A @ B (using shared memory)", host_c, rows1, cols2);
+
+    // matmul with shared memory
+    matMulCoalescedSharedMemory<<<blocksPerGrid, threadsPerBlock>>>(rows1, cols1, rows2, cols2, device_a, device_b, device_c);
+    cudaDeviceSynchronize();
+    cudaMemcpy(host_c, device_c, rows1 * cols2 * sizeof(float), cudaMemcpyDeviceToHost);
+    printMatrix("A @ B (using shared memory and memory coalescing)", host_c, rows1, cols2);
 
     // clean up
     free(host_a);
