@@ -2,5 +2,6 @@
 #define MATRIX_UTILS_H
 
 void printMatrix(const char* name, float* matrix, int rows, int cols, int maxPrint = 5);
+double get_time_ms();
 
 #endif

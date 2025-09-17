@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <algorithm>
+#include <time.h>
 #include "matrix_utils.h"
 
 void printMatrix(const char* name, float* matrix, int rows, int cols, int maxPrint) {
@@ -20,4 +21,10 @@ void printMatrix(const char* name, float* matrix, int rows, int cols, int maxPri
     if (rows > maxPrint)
         printf("...");
     printf("\n");
+}
+
+double get_time_ms() {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return ts.tv_sec * 1000.0 + ts.tv_nsec / 1000000.0;
 }

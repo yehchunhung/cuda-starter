@@ -17,7 +17,7 @@ void matMul(
     for (int row = 0; row < rows1; row++) {
         for (int col = 0; col < cols2; col++) {
             float sum = 0.0;
-            for (int i = 0; i < cols; k++)
+            for (int i = 0; i < cols1; i++)
                 sum += a[row * cols1 + i] * b[i*cols2 + col];
             
             c[row*cols2 + col] = sum;
@@ -39,7 +39,7 @@ void matMulMultiThreads(
     for (int row = 0; row < rows1; row++) {
         for (int col = 0; col < cols2; col++) {
             float sum = 0.0;
-            for (int i = 0; i < cols; k++)
+            for (int i = 0; i < cols1; i++)
                 sum += a[row * cols1 + i] * b[i*cols2 + col];
             
             c[row*cols2 + col] = sum;
@@ -51,7 +51,7 @@ void matMulTranspose(
     int rows1, int cols1, int rows2, int cols2,
     float* a, float* b, float* c
 ) {
-    if (cols1 != cols2) {
+    if (cols1 != rows2) {
         printf("Error: the number of columns of A must be equal to the number of rows of B^T\n");
         exit(1);
     }
@@ -64,7 +64,7 @@ void matMulTranspose(
             for (int i = 0; i < cols1; i++) {
                 // getting elements of B^T still follows getting one from B in memory
                 // simply swap the roles of i and col to get the correct B^T's element in B
-                sum += a[row * cols1 + i] * b[col * col2 + i];
+                sum += a[row * cols1 + i] * b[col * cols2 + i];
             }
             c[row * rows2 + col] = sum;
         }
