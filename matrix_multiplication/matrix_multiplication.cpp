@@ -4,7 +4,7 @@
 #include <omp.h>
 #include "../matrix_addition/matrix_utils.h"
 
-void matMul(
+void matMulNaive(
     int rows1, int cols1, int rows2, int cols2, 
     float* a, float* b, float* c
 ) {
@@ -16,11 +16,27 @@ void matMul(
     // naive matrix multiplication
     for (int row = 0; row < rows1; row++) {
         for (int col = 0; col < cols2; col++) {
-            float sum = 0.0;
             for (int i = 0; i < cols1; i++)
-                sum += a[row * cols1 + i] * b[i*cols2 + col];
-            
-            c[row*cols2 + col] = sum;
+                c[row*cols2 + col] += a[row * cols1 + i] * b[i*cols2 + col];
+        }
+    }
+}
+
+void matMulCoalesced(
+    int rows1, int cols1, int rows2, int cols2, 
+    float* a, float* b, float* c
+) {
+    if (cols1 != rows2) {
+        printf("Error: the number of columns of A must be equal to the number of rows of B\n");
+        exit(1);
+    }
+
+    // matrix multiplication to achieve lower cache miss
+    // loop reordering to access consecutive elements from b in the inner most loop
+    for (int row = 0; row < rows1; row++) {
+        for (int i = 0; i < cols1; i++) {
+            for (int col = 0; col < cols2; col++)
+                c[row*cols2 + col] += a[row * cols1 + i] * b[i * cols2 + col];
         }
     }
 }
@@ -35,19 +51,21 @@ void matMulMultiThreads(
     }
 
     // multi-thread matrix multiplication
-    #pragma omp parallel for num_threads(4)
+    #pragma omp parallel for
     for (int row = 0; row < rows1; row++) {
-        for (int col = 0; col < cols2; col++) {
-            float sum = 0.0;
-            for (int i = 0; i < cols1; i++)
-                sum += a[row * cols1 + i] * b[i*cols2 + col];
-            
-            c[row*cols2 + col] = sum;
+        for (int i = 0; i < cols1; i++) {
+            // cache elements for reuse
+            const float a_val = a[row * cols1 + i];
+            const float* b_row = &b[i * cols2];
+
+            #pragma omp simd
+            for (int col = 0; col < cols2; col++)
+                c[row*cols2 + col] += a_val * b_row[col];
         }
     }
 }
 
-void matMulTranspose(
+void matMulTransposeMultiThread(
     int rows1, int cols1, int rows2, int cols2,
     float* a, float* b, float* c
 ) {
@@ -58,28 +76,30 @@ void matMulTranspose(
 
     // perform matrix multiplication: A @ B^T
     // note that B's dim: (rows2, cols2) while B^T dim: (cols2, rows2)
+    #pragma omp parallel for
     for (int row = 0; row < rows1; row++) {
         for (int col = 0; col < rows2; col++) {
-            float sum = 0.0;
-            for (int i = 0; i < cols1; i++) {
+            const float* a_row = &a[row * cols1];
+            const float* b_row = &b[col * cols2];
+
+            #pragma omp simd // fused multiply-add and vectorization
+            for (int i = 0; i < cols1; i++)
                 // getting elements of B^T still follows getting one from B in memory
                 // simply swap the roles of i and col to get the correct B^T's element in B
-                sum += a[row * cols1 + i] * b[col * cols2 + i];
-            }
-            c[row * rows2 + col] = sum;
+                c[row * rows2 + col] += a_row[i] * b_row[i];
         }
     }
 }
 
-
 int main() {
     int rows1 = 1024, rows2 = 512;
     int cols1 = 512, cols2 = 512;
+    double start, end;
 
     // init input/output matrices
     float* a = (float*)malloc(rows1 * cols1 * sizeof(float));
     float* b = (float*)malloc(rows2 * cols2 * sizeof(float));
-    float* c = (float*)malloc(rows1 * cols2 * sizeof(float));
+    float* c = (float*)calloc(rows1 * cols2, sizeof(float));
 
     srand(5566);
     for (int i = 0; i < rows1 * cols1; i++)
@@ -92,14 +112,35 @@ int main() {
     printMatrix("B", b, rows2, cols2);
 
     // perform various matrix multiplication
-    matMul(rows1, cols1, rows2, cols2, a, b, c);
+    start = get_time_ms();
+    matMulNaive(rows1, cols1, rows2, cols2, a, b, c);
+    end = get_time_ms();
     printMatrix("A @ B", c, rows1, cols2);
+    printf("Time: %.6f ms\n\n", end - start);
 
+    // perform faster matmul by loop reordering
+    c = (float*)calloc(rows1 * cols2, sizeof(float)); // reset
+    start = get_time_ms();
+    matMulCoalesced(rows1, cols1, rows2, cols2, a, b, c);
+    end = get_time_ms();
+    printMatrix("A @ B (loop reordering to achieve lower cache miss)", c, rows1, cols2);
+    printf("Time: %.6f ms\n\n", end - start);
+
+    // consider multi threads as well
+    c = (float*)calloc(rows1 * cols2, sizeof(float)); // reset
+    start = get_time_ms();
     matMulMultiThreads(rows1, cols1, rows2, cols2, a, b, c);
-    printMatrix("A @ B (with 4 threads)", c, rows1, cols2);
+    end = get_time_ms();
+    printMatrix("A @ B (multi threads)", c, rows1, cols2);
+    printf("Time: %.6f ms\n\n", end - start);
 
-    matMulTranspose(rows1, cols1, rows2, cols2, a, b, c);
-    printMatrix("A @ B^T", c, rows1, rows2);
+    // A @ B^T by considering the above features
+    c = (float*)calloc(rows1 * cols2, sizeof(float)); // reset
+    start = get_time_ms();
+    matMulTransposeMultiThread(rows1, cols1, rows2, cols2, a, b, c);
+    end = get_time_ms();
+    printMatrix("A @ B^T (multi threads)", c, rows1, rows2);
+    printf("Time: %.6f ms\n\n", end - start);
 
     // clean up
     free(a);

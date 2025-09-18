@@ -49,22 +49,13 @@ __global__ void matMulSharedMemory(
     float sum = 0.0;
     for (int m = 0; m < (cols1 + TILE_SIZE - 1) / TILE_SIZE; m++) {
         // copy elements from original matrices to sub-matrices
-        if (row < rows1 && m*TILE_SIZE + tx < cols1)
-            shared_a[ty][tx] = a[row*cols1 + m*TILE_SIZE + tx];
-        else
-            shared_a[ty][tx] = 0.0;
-
-        if (m*TILE_SIZE + ty < rows2 && col < cols2)
-            shared_b[ty][tx] = b[(m*TILE_SIZE + ty)*cols2 + col];
-        else
-            shared_b[ty][tx] = 0.0;
-
+        shared_a[ty][tx] = (row < row1 && m*TILE_SIZE+tx < cols1) ? a[row*cols1 + m*TILE_SIZE + tx] : 0.0;
+        shared_b[ty][tx] = (m*TILE_SIZE+ty < rows2 && col < cols2) ? b[(m*TILE_SIZE + ty)*cols2 + col] : 0.0;
         __syncthreads();
         
         // compute matmul per thread within a block
         for (int i = 0; i < TILE_SIZE; i++)
             sum += shared_a[ty][i] * shared_b[i][tx];
-
         __syncthreads();
     }
 
@@ -96,17 +87,9 @@ __global__ void matMulTransposeSharedMemory(
     float sum = 0.0;
     for (int m = 0; m < (cols1 + TILE_SIZE - 1) / TILE_SIZE; m++) {
         // copy elements from original matrices to sub-matrices
-        if (row < rows1 && m*TILE_SIZE + tx < cols1)
-            shared_a[ty][tx] = a[row*cols1 + m*TILE_SIZE + tx];
-        else
-            shared_a[ty][tx] = 0.0;
-
-        if (m*TILE_SIZE + ty < rows2 && col < cols2)
-            // shared_b[tx][ty] is transpose of shared_b[ty][tx]
-            shared_b[tx][ty] = b[(m*TILE_SIZE + ty)*cols2 + col];
-        else
-            shared_b[tx][ty] = 0.0;
-
+        // shared_b[tx][ty] is transpose of shared_b[ty][tx]
+        shared_a[ty][tx] = (row < row1 && m*TILE_SIZE+tx < cols1) ? a[row*cols1 + m*TILE_SIZE + tx] : 0.0;
+        shared_b[tx][ty] = (m*TILE_SIZE+ty < rows2 && col < cols2) ? b[(m*TILE_SIZE + ty)*cols2 + col] : 0.0;
         __syncthreads();
         
         // threads are placed row-wise along a column
